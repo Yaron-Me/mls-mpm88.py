@@ -39,7 +39,7 @@ inv_dx: tfloat = 1.0 / dx
 particle_mass: tfloat = 505.0
 vol: tfloat = 1 # scale factor
 hardening: tfloat = 100.0
-E: tfloat = 9e6
+E: tfloat = 3e7
 nu: tfloat = 0.37
 plastic: bool = False
 
@@ -48,15 +48,18 @@ lambda_0: tfloat = E * nu / ((1 + nu) * (1 - 2 * nu))
 
 # Beam bending values (meters)
 beam_length: tfloat = 0.7
-beam_height: tfloat = 0.05
+beam_height: tfloat = 0.02
 beam_width: tfloat = 1.0/n
 
-particle_count = int(beam_length * beam_height * 60000)
+particle_count = int(beam_length * beam_height * 90000)
 
 # Material density (kg/m^3)
 density: tfloat = 600.0
 total_mass: tfloat = density * beam_length * beam_height * beam_width
 
+gridpoints = ((n + 1)**2) * ((beam_height * beam_length) / vol)
+print(particle_mass, density, gridpoints)
+# exit()
 # particle_mass = (total_mass * 1000000 / particle_count)
 # print(particle_mass, total_mass, particle_mass / total_mass)
 
@@ -72,8 +75,8 @@ print(w, beam_length, E, I, deflection)
 
 deflections = []
 
-for x in range(101):
-    x = (x / 100) * beam_length
+for x in range(201):
+    x = (x / 200) * beam_length
     y = ((w * x ** 2) / (24 * E * I)) * (x ** 2 + 6 * beam_length ** 2 - 4 * beam_length * x)
     deflections.append((x + 0.04, 0.5 - y))
 
@@ -298,6 +301,8 @@ if __name__ == '__main__':
     distances = []
     times = []
 
+    oscillations = []
+
     while gui.running:
         advance(dt)
         if EXIT[None] == 1:
@@ -335,25 +340,21 @@ if __name__ == '__main__':
             for i in benchmark_particle_indicies:
                 [x, y] = particle_coords[i]
                 benchmark_coords.append(Vec2D(x, y))
-                gui.circle([x, y], radius=2, color=0xFF00FF)
 
-            # convert to numpy array
-            # start = time.time()
             benchmark_coords = np.array(benchmark_coords)
             benchmark_coords2 = np.array(deflections)
 
             (closest_points, closest_indices, closest_distances) = find_closest_points(benchmark_coords, benchmark_coords2)
 
+            avg_deflection = 0
             for p1, p2 in zip(benchmark_coords, closest_points):
                 gui.line(p1, p2, color=0xFFFFFF)
+                avg_deflection += (p1[1] - p2[1])
+            avg_deflection = avg_deflection / len(benchmark_coords)
 
-            # print(closest_distances.shape)
-            # exit()
-
-            distance = np.average(closest_distances)
-
-            distances.append(distance)
+            distances.append(avg_deflection)
             times.append(current_time)
+
             if (step % (int(frame_dt / dt) * 100)) == 0:
                 update_plot(times, distances)
 
