@@ -1,6 +1,12 @@
 from taichialgebra import *
 import taichi as ti
-from math import ceil
+import numpy as np
+
+import matplotlib.pyplot as plt
+
+# Create a plot and keep the figure and axis objects
+fig, ax = plt.subplots()
+line, = ax.plot([], [], 'r-')  # Initialize an empty plot
 
 # #fast_math=False maybe needed for some operations
 ti.init(arch=ti.gpu, default_fp=ti.f64)
@@ -8,16 +14,17 @@ ti.init(arch=ti.gpu, default_fp=ti.f64)
 
 @ti.dataclass
 class Particle:
-    x: Vec2D
-    v: Vec2D
+    x: Vec2D # coord
+    v: Vec2D # velocity
     F: Mat
     C: Mat
     Jp: tfloat
-    c: tint
+    c: tint # color
+    b: bool
 
 @ti.func
-def new_Particle(x: Vec2D, c: tint) -> Particle:
-    return Particle(x, Vec2D(0.0, 0.0), Mat(1.0, 0.0, 0.0, 1.0), Mat(0.0, 0.0, 0.0, 0.0), 1.0, c)
+def new_Particle(x: Vec2D, c: tint, b: bool) -> Particle:
+    return Particle(x, Vec2D(0.0, 0.0), Mat(1.0, 0.0, 0.0, 1.0), Mat(0.0, 0.0, 0.0, 0.0), 1.0, c, b)
 
 window_size: tint = 800
 n: tint = 80
@@ -29,7 +36,7 @@ dx: tfloat = 1.0 / n
 inv_dx: tfloat = 1.0 / dx
 
 
-particle_mass: tfloat = 520.0 * 2
+particle_mass: tfloat = 505.0
 vol: tfloat = 1 # scale factor
 hardening: tfloat = 100.0
 E: tfloat = 9e6
@@ -47,7 +54,7 @@ beam_width: tfloat = 1.0/n
 particle_count = int(beam_length * beam_height * 60000)
 
 # Material density (kg/m^3)
-density: tfloat = 1180.0 * 2
+density: tfloat = 600.0
 total_mass: tfloat = density * beam_length * beam_height * beam_width
 
 # particle_mass = (total_mass * 1000000 / particle_count)
@@ -68,10 +75,10 @@ deflections = []
 for x in range(101):
     x = (x / 100) * beam_length
     y = ((w * x ** 2) / (24 * E * I)) * (x ** 2 + 6 * beam_length ** 2 - 4 * beam_length * x)
-    deflections.append((x, y))
+    deflections.append((x + 0.04, 0.5 - y))
 
 # Initialize list of particles
-S = ti.root.dynamic(ti.i, 1024 * 16, chunk_size = 32)
+S = ti.root.dynamic(ti.i, 1024 * 4, chunk_size = 32)
 particles = Particle.field()
 S.place(particles)
 
@@ -85,23 +92,14 @@ def gridIndex(i: tint, j: tint) -> int:
     return i + (n + 1) * j
 
 @ti.kernel
-def add_random_particles():
-    color = int(ti.random() * 0xFFFFFF)
-    add_object(Vec2D(0.5,0.8), color)
-
-@ti.kernel
-def spawn_cubes():
-    add_object(Vec2D(0.55, 0.45), 0xED553B)
-    add_object(Vec2D(0.45,0.65), 0xF2B134)
-    add_object(Vec2D(0.55,0.85), 0x068587)
-
-@ti.kernel
 def spawn_single():
     particles.append(new_Particle(Vec2D(0.5, 0.93), 0xED553B))
 
 @ti.kernel
 def spawn_beam():
-    for _ in range(particle_count):
+    bottoms = 100
+
+    for _ in range(particle_count - bottoms):
         # x = 0 -> 1
         x = ti.random(dtype=tfloat)
         # scale x from 0.04 to 0.5
@@ -112,9 +110,16 @@ def spawn_beam():
         # scale y from 0.5 to 0.55
         y = y * beam_height + 0.5
 
-        particles.append(new_Particle(Vec2D(x, y), 0xED553B))
+        particles.append(new_Particle(Vec2D(x, y), 0xED553B, False))
 
-    particles.append(new_Particle(Vec2D(0.04 + beam_length, 0.5), 0xED553B))
+    for i in range(bottoms):
+        x = (i / (bottoms - 1)) * beam_length + 0.04
+
+        y = 0.5
+
+        c = 0x00FF00 if i != 99 else 0xFF00FF
+
+        particles.append(new_Particle(Vec2D(x, y), c, True))
 
     print(f"spawned {particle_count} particles")
 
@@ -224,14 +229,14 @@ def advance(dt: tfloat):
 
         F = mulMat(particles[index].F, (Mat(1.0, 0.0, 0.0, 1.0) + particles[index].C * dt))
 
-        svd_u, sig, svd_v = svd(F)
+        # svd_u, sig, svd_v = svd(F)
 
-        for i in ti.static(range(2 * int(plastic))):
-            sig[i + 2*i] = clamp(sig[i+2*i], 1.0 - 2.5e-2, 1.0 + 7.5e-3)
+        # for i in ti.static(range(2 * int(plastic))):
+        #     sig[i + 2*i] = clamp(sig[i+2*i], 1.0 - 2.5e-2, 1.0 + 7.5e-3)
 
         oldJ = determinant(F)
 
-        F = mulMat(mulMat(svd_u, sig), transposed(svd_v))
+        # F = mulMat(mulMat(svd_u, sig), transposed(svd_v))
 
         Jp_new = clamp(particles[index].Jp * oldJ / determinant(F), 0.6, 20.0)
         particles[index].Jp = Jp_new
@@ -241,28 +246,57 @@ def advance(dt: tfloat):
 def initEXIT():
     EXIT[None] = ti.cast(0, ti.i8)
 
+@ti.kernel
+def smallestDistances(points1: ti.template(), points2: ti.template()) -> tfloat:
+    n = points1.shape[0]
+    m = points2.shape[0]
+    totalDistances = 0.0
+    for i in range(n):
+        smallestDistance = 100.0
+        for j in range(m):
+            distance = (Vec2D(points1[i, 0],points1[i,1] - Vec2D(points1[j, 0],points1[j,1]))).norm()
+            if distance < smallestDistance:
+                smallestDistance = distance
+        totalDistances += smallestDistance
+    return totalDistances/n
+
+
+def find_closest_points(array1, array2):
+    # array1 is of shape (m, 2) and array2 is of shape (n, 2)
+    # We will broadcast the subtraction and compute distances
+    diff = array1[:, np.newaxis, :] - array2[np.newaxis, :, :]  # shape (m, n, 2)
+    distances = np.sum(diff**2, axis=2)  # shape (m, n), squared distances
+    closest_indices = np.argmin(distances, axis=1)  # shape (m,), index of the closest point in array2 for each point in array1
+    closest_points = array2[closest_indices]  # shape (m, 2), the closest points
+    closest_distances = np.sqrt(distances[np.arange(distances.shape[0]), closest_indices])  # shape (m,), the distances to the closest points
+
+    return closest_points, closest_indices, closest_distances
+
+def update_plot(times, distances):
+    line.set_data(times, distances)
+    ax.relim()  # Recompute the data limits
+    ax.autoscale_view()  # Rescale the view
+    plt.draw()  # Update the plot
+    plt.pause(0.01)  # Pause briefly to allow the plot to update
+
 if __name__ == '__main__':
     initEXIT()
     print(EXIT[None])
     spawn_beam()
 
-    lowest_point = 0
-    cloest_distance = 1000
-    # get particle closest to the bottom right of the beam
-    particle_coords = particles.x.to_numpy()
-    particle_coords = particle_coords[~(particle_coords == 0).all(1)]
-    for i, coord in enumerate(particle_coords):
-        distance = (coord - Vec2D(0.04 + beam_length, 0.5)).norm()
-        if distance < cloest_distance:
-            cloest_distance = distance
-            lowest_point = i
-
+    # get 100 particles
+    benchmark_particles = particles.b.to_numpy()
+    # get indices of indicies that are True
+    benchmark_particle_indicies = [i for i, x in enumerate(benchmark_particles) if x]
 
     frame: tint = 0
     last_frame: tint = frame
     step: tint = 0
 
     gui = ti.GUI('Taichi MLS-MPM', res=(window_size, window_size))
+
+    distances = []
+    times = []
 
     while gui.running:
         advance(dt)
@@ -280,16 +314,9 @@ if __name__ == '__main__':
             # remove all particles that are [0,0]
             particle_coords = particle_coords[~(particle_coords == 0).all(1)]
 
-            
-
             # print(f"Expected deflection: {deflection}m")
             print(f"at {current_time}s")
             gui.circles(particle_coords, radius=2, color=pixel_colors)
-
-            [far_x, low_y] = particle_coords[lowest_point]
-
-            print(f"Lowest point: {particle_coords[lowest_point]}")
-            gui.circle(particle_coords[lowest_point], radius=2, color=0x00FF00)
 
             gui.rect(topleft = [0.04, 0.04], bottomright=[0.96, 0.96], color=0x068587)
             # draw lines every 10cm
@@ -298,11 +325,37 @@ if __name__ == '__main__':
                 # draw line at y
                 gui.line([0.04, y], [0.96, y], color=0xFFFFFF)
 
-            for x, y, in deflections[0:ceil(100*(far_x  - 0.04)/beam_length)]:
-                gui.circle([x + 0.04, 0.5 - y], radius=2, color=0x00FF00)
+            for x, y, in deflections: # [0:np.ceil(100*(far_x  - 0.04)/beam_length)]
+                gui.circle([x, y], radius=2, color=0x00FF00)
 
             # draw horizontal line at min_y
             gui.line([0.04, 0.5 - deflection], [0.96, 0.5 - deflection], color=0x00FF00)
+
+            benchmark_coords = []
+            for i in benchmark_particle_indicies:
+                [x, y] = particle_coords[i]
+                benchmark_coords.append(Vec2D(x, y))
+                gui.circle([x, y], radius=2, color=0xFF00FF)
+
+            # convert to numpy array
+            # start = time.time()
+            benchmark_coords = np.array(benchmark_coords)
+            benchmark_coords2 = np.array(deflections)
+
+            (closest_points, closest_indices, closest_distances) = find_closest_points(benchmark_coords, benchmark_coords2)
+
+            for p1, p2 in zip(benchmark_coords, closest_points):
+                gui.line(p1, p2, color=0xFFFFFF)
+
+            # print(closest_distances.shape)
+            # exit()
+
+            distance = np.average(closest_distances)
+
+            distances.append(distance)
+            times.append(current_time)
+            if (step % (int(frame_dt / dt) * 100)) == 0:
+                update_plot(times, distances)
 
             gui.show()
 
