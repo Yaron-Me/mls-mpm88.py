@@ -36,7 +36,7 @@ dx: tfloat = 1.0 / n
 inv_dx: tfloat = 1.0 / dx
 
 
-particle_mass: tfloat = 505.0
+particle_mass: tfloat = 505.0 * 2
 vol: tfloat = 1 # scale factor
 hardening: tfloat = 100.0
 E: tfloat = 3e7
@@ -54,7 +54,7 @@ beam_width: tfloat = 1.0/n
 particle_count = int(beam_length * beam_height * 90000)
 
 # Material density (kg/m^3)
-density: tfloat = 600.0
+density: tfloat = 600.0 * 2
 total_mass: tfloat = density * beam_length * beam_height * beam_width
 
 gridpoints = ((n + 1)**2) * ((beam_height * beam_length) / vol)
@@ -352,11 +352,11 @@ if __name__ == '__main__':
                 avg_deflection += (p1[1] - p2[1])
             avg_deflection = avg_deflection / len(benchmark_coords)
 
-            distances.append(avg_deflection)
+            deflections.append(avg_deflection)
             times.append(current_time)
 
             if (step % (int(frame_dt / dt) * 100)) == 0:
-                update_plot(times, distances)
+                update_plot(times, deflections)
 
             gui.show()
 
