@@ -8,6 +8,10 @@ import matplotlib.pyplot as plt
 fig, ax = plt.subplots()
 line, = ax.plot([], [], 'r-')  # Initialize an empty plot
 
+# Set the x and y axis labels
+ax.set_xlabel('Time (s)')
+ax.set_ylabel('Average distance from expected deflection (m)')
+
 # #fast_math=False maybe needed for some operations
 ti.init(arch=ti.gpu, default_fp=ti.f64)
 # ti.init(default_fp=ti.f64)
@@ -36,10 +40,10 @@ dx: tfloat = 1.0 / n
 inv_dx: tfloat = 1.0 / dx
 
 
-particle_mass: tfloat = 505.0 * 2
-vol: tfloat = 1 # scale factor
+particle_mass: tfloat = 585.0
+vol: tfloat = 1
 hardening: tfloat = 100.0
-E: tfloat = 3e7
+E: tfloat = 1e6
 nu: tfloat = 0.37
 plastic: bool = False
 
@@ -47,23 +51,34 @@ mu_0: tfloat = E / (2 * (1 + nu))
 lambda_0: tfloat = E * nu / ((1 + nu) * (1 - 2 * nu))
 
 # Beam bending values (meters)
-beam_length: tfloat = 0.7
-beam_height: tfloat = 0.02
+beam_length: tfloat = 0.5
+beam_height: tfloat = 0.05
 beam_width: tfloat = 1.0/n
 
-particle_count = int(beam_length * beam_height * 90000)
+heightoffset = 0.8
+
 
 # Material density (kg/m^3)
-density: tfloat = 600.0 * 2
+density: tfloat = 600.0 / 2
 total_mass: tfloat = density * beam_length * beam_height * beam_width
 
-gridpoints = ((n + 1)**2) * ((beam_height * beam_length) / vol)
-print(particle_mass, density, gridpoints)
+particles_per_cell = 35
+gridpoints = ((n + 1)**2) * ((beam_height * beam_length))
+particle_count = int(gridpoints * particles_per_cell)
+
+cell_volume = dx * dx * dx
+cell_mass = cell_volume * particle_mass
+print(gridpoints * cell_mass)
+print(total_mass)
+good = total_mass / (gridpoints * cell_volume)
+print(good)
+particle_mass = good
 # exit()
 # particle_mass = (total_mass * 1000000 / particle_count)
 # print(particle_mass, total_mass, particle_mass / total_mass)
 
-force: tfloat = 9.81 * total_mass
+downforce: tfloat = 9.81
+force: tfloat = downforce * total_mass
 # Uniform force applied to the beam
 w = force / (beam_length)
 # Moment of inertia
@@ -73,15 +88,18 @@ deflection = (w * beam_length ** 4) / (8 * E * I)
 
 print(w, beam_length, E, I, deflection)
 
+def yinx(x):
+    return ((w * x ** 2) / (24 * E * I)) * (x ** 2 + 6 * beam_length ** 2 - 4 * beam_length * x)
+
 deflections = []
 
 for x in range(201):
     x = (x / 200) * beam_length
-    y = ((w * x ** 2) / (24 * E * I)) * (x ** 2 + 6 * beam_length ** 2 - 4 * beam_length * x)
-    deflections.append((x + 0.04, 0.5 - y))
+    y = yinx(x)
+    deflections.append((x + 0.04, heightoffset - y))
 
 # Initialize list of particles
-S = ti.root.dynamic(ti.i, 1024 * 4, chunk_size = 32)
+S = ti.root.dynamic(ti.i, 1024 * 16, chunk_size = 32)
 particles = Particle.field()
 S.place(particles)
 
@@ -111,14 +129,14 @@ def spawn_beam():
         # y = 0 -> 1
         y = ti.random(dtype=tfloat)
         # scale y from 0.5 to 0.55
-        y = y * beam_height + 0.5
+        y = y * beam_height + heightoffset
 
         particles.append(new_Particle(Vec2D(x, y), 0xED553B, False))
 
     for i in range(bottoms):
         x = (i / (bottoms - 1)) * beam_length + 0.04
 
-        y = 0.5
+        y = heightoffset
 
         c = 0x00FF00 if i != 99 else 0xFF00FF
 
@@ -188,7 +206,7 @@ def advance(dt: tfloat):
             ii = gridIndex(i, j)
             if grid[ii][2] > 0:
                 grid[ii] /= grid[ii][2]
-                grid[ii] += Vec3D(0, -9.81 * dt / vol, 0) # gravity
+                grid[ii] += Vec3D(0, -downforce * dt, 0) # gravity
 
                 x = i / n
                 y = j / n
@@ -197,7 +215,7 @@ def advance(dt: tfloat):
                     grid[ii] = Vec3D(0, 0, 0)
 
                 if (y < boundary):
-                    EXIT[None] = ti.cast(1, ti.i8)
+                    # EXIT[None] = ti.cast(1, ti.i8)
                     grid[ii][1] = max(0.0, grid[ii][1])
 
     # G2P
@@ -310,7 +328,7 @@ if __name__ == '__main__':
             exit()
         current_time += dt
 
-        if (step % int(frame_dt / dt)) == 0:
+        if (step % (int(frame_dt / dt)+1)) == 0:
             gui.clear(0x112F41)
             particle_coords = particles.x.to_numpy()
             pixel_colors = particles.c.to_numpy()
@@ -321,44 +339,60 @@ if __name__ == '__main__':
 
             # print(f"Expected deflection: {deflection}m")
             print(f"at {current_time}s")
+
+            spacing = np.linspace(0, 1, n)
+            for space in spacing:
+                gui.line([0, space], [1, space], color=0x068587)
+                gui.line([space, 0], [space, 1], color=0x068587)
+
+            # gui.rect(topleft = [0.04, 0.04], bottomright=[0.96, 0.96], color=0x068587)
+            gui.line([0.04, 0], [0.04, 1], color=0xFFFFFF)
+
             gui.circles(particle_coords, radius=2, color=pixel_colors)
 
-            gui.rect(topleft = [0.04, 0.04], bottomright=[0.96, 0.96], color=0x068587)
-            # draw lines every 10cm
-            for y in range(10):
-                y = y / 10
-                # draw line at y
-                gui.line([0.04, y], [0.96, y], color=0xFFFFFF)
-
             for x, y, in deflections: # [0:np.ceil(100*(far_x  - 0.04)/beam_length)]
-                gui.circle([x, y], radius=2, color=0x00FF00)
+                gui.circle([x, y], radius=2, color=0xFF00FF)
 
             # draw horizontal line at min_y
-            gui.line([0.04, 0.5 - deflection], [0.96, 0.5 - deflection], color=0x00FF00)
-
-            benchmark_coords = []
-            for i in benchmark_particle_indicies:
-                [x, y] = particle_coords[i]
-                benchmark_coords.append(Vec2D(x, y))
-
-            benchmark_coords = np.array(benchmark_coords)
-            benchmark_coords2 = np.array(deflections)
-
-            (closest_points, closest_indices, closest_distances) = find_closest_points(benchmark_coords, benchmark_coords2)
+            # gui.line([0.04, heightoffset - deflection], [0.96, heightoffset - deflection], color=0xFF0000)
 
             avg_deflection = 0
-            for p1, p2 in zip(benchmark_coords, closest_points):
-                gui.line(p1, p2, color=0xFFFFFF)
-                avg_deflection += (p1[1] - p2[1])
-            avg_deflection = avg_deflection / len(benchmark_coords)
+            # benchmark_coords = []
+            for i in benchmark_particle_indicies:
+                [x, y] = particle_coords[i]
+                expected_y = heightoffset - yinx(x - 0.04)
+                gui.line([x, y], [x, expected_y], color=0xFFFFFF)
+                avg_deflection += np.abs(expected_y - y)
+                # benchmark_coords.append(Vec2D(x, y))
 
-            deflections.append(avg_deflection)
+            # benchmark_coords = np.array(benchmark_coords)
+            # benchmark_coords2 = np.array(deflections)
+
+            # (closest_points, closest_indices, closest_distances) = find_closest_points(benchmark_coords, benchmark_coords2)
+
+            # avg_deflection = 0
+            # for p1, p2 in zip(benchmark_coords, closest_points):
+            #     # if p1[0] > 0.04:
+            #     #     gui.line(p1, p2, color=0xFFFFFF)
+            #     avg_deflection += np.linalg.norm(p1 - p2)
+            avg_deflection = avg_deflection / len(benchmark_particle_indicies)
+
+            distances.append(avg_deflection)
             times.append(current_time)
 
-            if (step % (int(frame_dt / dt) * 100)) == 0:
-                update_plot(times, deflections)
+            if (step % ((int(frame_dt / dt)+1) * 100)) == 0:
+                update_plot(times, distances)
 
+                if (current_time > 1):
+                    # save the figure
+                    plt.savefig(f"deflections.png")
+
+            # if (frame%5 == 0):
+            #     gui.show(f"standard_beam{frame}.png")
+            # else:
             gui.show()
+            # exit()
+            # gui.show(f"crash/{frame}.png")
 
             frame += 1
 
