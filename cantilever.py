@@ -30,7 +30,7 @@ class Particle:
 def new_Particle(x: Vec2D, c: tint, b: bool) -> Particle:
     return Particle(x, Vec2D(0.0, 0.0), Mat(1.0, 0.0, 0.0, 1.0), Mat(0.0, 0.0, 0.0, 0.0), 1.0, c, b)
 
-window_size: tint = 800
+window_size: tint = 1600
 n: tint = 80
 
 dt: tfloat = 1e-5
@@ -102,9 +102,6 @@ for x in range(201):
 S = ti.root.dynamic(ti.i, 1024 * 16, chunk_size = 32)
 particles = Particle.field()
 S.place(particles)
-
-# Stupid hack to allow for early exit
-EXIT = ti.field(ti.i8, shape=())
 
 grid = Vec3D.field(shape=((n + 1) * (n + 1),))
 
@@ -185,8 +182,6 @@ def advance(dt: tfloat):
         k2 = lambda_ * (J - 1) * J
 
         stress = (mulMat((transposed(p.F) - r),p.F) * 2 * mu + Mat(k2,0,0,k2)) * k1
-        # cauchy = mu * (mulMat(p.F, transposed(p.F))) + Mat(1, 0, 0, 1) * (lambda_ * ti.log(J) - mu)
-        # stress = -(dt * vol * 4 * inv_dx * inv_dx) * cauchy
         affine = stress + p.C * particle_mass
 
         mv = Vec3D(p.v[0] * particle_mass, p.v[1] * particle_mass, particle_mass)
@@ -196,7 +191,6 @@ def advance(dt: tfloat):
                 weight = w[i][0] * w[j][1]
                 ii = gridIndex(base_coord[0] + i, base_coord[1] + j)
                 mul = mulMatVec(affine, dpos)
-                # ti.atomic_add(grid[ii], (mv + Vec3D(mul[0], mul[1], 0.0)) * weight)
                 grid[ii] += (mv + Vec3D(mul[0], mul[1], 0.0)) * weight
 
     # Modify grid velocities to respect boundaries
@@ -215,7 +209,6 @@ def advance(dt: tfloat):
                     grid[ii] = Vec3D(0, 0, 0)
 
                 if (y < boundary):
-                    # EXIT[None] = ti.cast(1, ti.i8)
                     grid[ii][1] = max(0.0, grid[ii][1])
 
     # G2P
@@ -263,36 +256,6 @@ def advance(dt: tfloat):
         particles[index].Jp = Jp_new
         particles[index].F = F
 
-@ti.kernel
-def initEXIT():
-    EXIT[None] = ti.cast(0, ti.i8)
-
-@ti.kernel
-def smallestDistances(points1: ti.template(), points2: ti.template()) -> tfloat:
-    n = points1.shape[0]
-    m = points2.shape[0]
-    totalDistances = 0.0
-    for i in range(n):
-        smallestDistance = 100.0
-        for j in range(m):
-            distance = (Vec2D(points1[i, 0],points1[i,1] - Vec2D(points1[j, 0],points1[j,1]))).norm()
-            if distance < smallestDistance:
-                smallestDistance = distance
-        totalDistances += smallestDistance
-    return totalDistances/n
-
-
-def find_closest_points(array1, array2):
-    # array1 is of shape (m, 2) and array2 is of shape (n, 2)
-    # We will broadcast the subtraction and compute distances
-    diff = array1[:, np.newaxis, :] - array2[np.newaxis, :, :]  # shape (m, n, 2)
-    distances = np.sum(diff**2, axis=2)  # shape (m, n), squared distances
-    closest_indices = np.argmin(distances, axis=1)  # shape (m,), index of the closest point in array2 for each point in array1
-    closest_points = array2[closest_indices]  # shape (m, 2), the closest points
-    closest_distances = np.sqrt(distances[np.arange(distances.shape[0]), closest_indices])  # shape (m,), the distances to the closest points
-
-    return closest_points, closest_indices, closest_distances
-
 def update_plot(times, distances):
     line.set_data(times, distances)
     ax.relim()  # Recompute the data limits
@@ -301,8 +264,6 @@ def update_plot(times, distances):
     plt.pause(0.01)  # Pause briefly to allow the plot to update
 
 if __name__ == '__main__':
-    initEXIT()
-    print(EXIT[None])
     spawn_beam()
 
     # get 100 particles
@@ -323,9 +284,6 @@ if __name__ == '__main__':
 
     while gui.running:
         advance(dt)
-        if EXIT[None] == 1:
-            print(f"reached bottom at {current_time}")
-            exit()
         current_time += dt
 
         if (step % (int(frame_dt / dt)+1)) == 0:
@@ -350,31 +308,16 @@ if __name__ == '__main__':
 
             gui.circles(particle_coords, radius=2, color=pixel_colors)
 
-            for x, y, in deflections: # [0:np.ceil(100*(far_x  - 0.04)/beam_length)]
+            for x, y, in deflections:
                 gui.circle([x, y], radius=2, color=0xFF00FF)
 
-            # draw horizontal line at min_y
-            # gui.line([0.04, heightoffset - deflection], [0.96, heightoffset - deflection], color=0xFF0000)
-
             avg_deflection = 0
-            # benchmark_coords = []
             for i in benchmark_particle_indicies:
                 [x, y] = particle_coords[i]
                 expected_y = heightoffset - yinx(x - 0.04)
                 gui.line([x, y], [x, expected_y], color=0xFFFFFF)
                 avg_deflection += np.abs(expected_y - y)
-                # benchmark_coords.append(Vec2D(x, y))
 
-            # benchmark_coords = np.array(benchmark_coords)
-            # benchmark_coords2 = np.array(deflections)
-
-            # (closest_points, closest_indices, closest_distances) = find_closest_points(benchmark_coords, benchmark_coords2)
-
-            # avg_deflection = 0
-            # for p1, p2 in zip(benchmark_coords, closest_points):
-            #     # if p1[0] > 0.04:
-            #     #     gui.line(p1, p2, color=0xFFFFFF)
-            #     avg_deflection += np.linalg.norm(p1 - p2)
             avg_deflection = avg_deflection / len(benchmark_particle_indicies)
 
             distances.append(avg_deflection)
