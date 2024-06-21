@@ -6,25 +6,7 @@ from decimal import Decimal
 
 ti.init(arch=ti.gpu, default_fp=ti.f64)
 
-@ti.dataclass
-class Particle:
-    x: Vec2D # coord
-    v: Vec2D # velocity
-    F: Mat
-    C: Mat
-    Jp: tfloat
-    c: tint # color
-    b: bool
-
-@ti.func
-def new_Particle(x: Vec2D, c: tint, b: bool) -> Particle:
-    return Particle(x, Vec2D(0.0, 0.0), Mat(1.0, 0.0, 0.0, 1.0), Mat(0.0, 0.0, 0.0, 0.0), 1.0, c, b)
-
 window_size: tint = 800
-
-
-# Offset of the beam from the bottom of the screen
-heightoffset = 0.8
 
 #SIMULATION PARAMETERS--------------------------------
 
@@ -37,12 +19,16 @@ random_particle_position: bool = True
 # Number of particles per m^2
 particles_per_m2 = 230000
 
+# Offset of the beam from the bottom of the screen
+heightoffset = 0.8
+
 #-----------------------------------------------------
 
 current_time: tfloat = 0.0
 frame_dt: tfloat = 1e-3
 dx: tfloat = 1.0 / n
 inv_dx: tfloat = 1.0 / dx
+
 
 #BEAM PARAMETERS--------------------------------------
 
@@ -57,16 +43,20 @@ density: tfloat = 10
 # Young's modulus (Pa)
 E: tfloat = 1e5
 
+# Poisson's ratio
+nu: tfloat = 0.37
+
 # Force on the beam (N/kg)
 downforce: tfloat = 9.81 * 2
-# -----------------------------------------------------
+
+
+# Create file ----------------------------------------
 
 # Create a filename based on the parameters
-prefix = "TEST"
+prefix = "DataAndVisualization/"
 
 dims = f"[{beam_length}x{beam_height}]"
 dens = f"{density}"
-# format E as scientific notation
 e = '%.0E' % Decimal(f"{E}")
 frce = f"{downforce}"
 d_t = '%.1E' % Decimal(f"{dt}")
@@ -74,7 +64,7 @@ rnd = "T" if random_particle_position else "F"
 N = f"{n}"
 filename = f"{prefix}{dims}_{dens}_{e}_{frce}_{d_t}_{rnd}_{N}_{particles_per_m2}"
 
-# Check if the file already exists
+# Check if the file already exists, if so, exit
 try:
     with open(f"{filename}.txt", "r") as f:
         print("File already exists, delete if you want to rerun.\nexiting...")
@@ -82,15 +72,17 @@ try:
 except FileNotFoundError:
     ...
 
+
+# Initialize constants --------------------------------
+
 vol: tfloat = 1
 hardening: tfloat = 100.0
-nu: tfloat = 0.37
 
+# Lame parameters
 mu_0: tfloat = E / (2 * (1 + nu))
 lambda_0: tfloat = E * nu / ((1 + nu) * (1 - 2 * nu))
 
 total_mass: tfloat = density * beam_length * beam_height * beam_width
-
 
 particle_count = int(particles_per_m2 * beam_length * beam_height)
 gridpoints = ((n + 1)**2) * ((beam_height * beam_length))
@@ -98,10 +90,14 @@ gridpoints = ((n + 1)**2) * ((beam_height * beam_length))
 cell_volume = dx * dx * dx
 particle_mass = total_mass / (gridpoints * cell_volume)
 
+
+# Calculate beam deflection ----------------------------
+
+# Total force applied to the beam
 force: tfloat = downforce * total_mass
 # Uniform force applied to the beam
 w = force / (beam_length)
-# Moment of inertia
+# Area moment of inertia
 I = (beam_height ** 3 * beam_width) / 12
 
 def yinx(x):
@@ -114,6 +110,35 @@ for x in range(201):
     y = yinx(x)
     deflections.append((x + 0.04, heightoffset - y))
 
+
+# Initialize plot ---------------------------------------
+
+# Create a plot and keep the figure and axis objects
+fig, ax = plt.subplots()
+topavgline, = ax.plot([], [], 'r-', label="Maximum avg deflection at top oscillation")  # Initialize an empty line
+bottomavgline, = ax.plot([], [], 'b-', label="Maximum avg deflection at bottom oscillation")  # Initialize an empty line
+topendline, = ax.plot([], [], 'g-', label="Maximum deflection at free end at top oscillation")  # Initialize an empty line
+bottomendline, = ax.plot([], [], 'y-', label="Maximum deflection at free end at bottom oscillation")  # Initialize an empty line
+
+# Set the x and y axis labels
+ax.set_xlabel('Time (s)', fontsize=14)
+ax.set_ylabel('Average distance from expected deflection (cm)', fontsize=14)
+ax.set_title('Distance from expected deflection\n \
+over time of top and bottom oscillations', fontsize=14)
+
+# -------------------------------------------------------
+
+
+@ti.dataclass
+class Particle:
+    x: Vec2D # coord
+    v: Vec2D # velocity
+    F: Mat
+    C: Mat
+    Jp: tfloat
+    c: tint # color
+    b: bool
+
 # Initialize list of particles
 S = ti.root.dynamic(ti.i, 1024 * 16, chunk_size = 32)
 particles = Particle.field()
@@ -122,18 +147,9 @@ S.place(particles)
 # Initialize grid
 grid = Vec3D.field(shape=((n + 1) * (n + 1),))
 
-# Create a plot and keep the figure and axis objects
-fig, ax = plt.subplots()
-topavgline, = ax.plot([], [], 'r-', label="Maximum avg deflection at top oscillation")  # Initialize an empty plot
-bottomavgline, = ax.plot([], [], 'b-', label="Maximum avg deflection at bottom oscillation")  # Initialize an empty plot
-topendline, = ax.plot([], [], 'g-', label="Maximum deflection at free end at top oscillation")  # Initialize an empty plot
-bottomendline, = ax.plot([], [], 'y-', label="Maximum deflection at free end at bottom oscillation")  # Initialize an empty plot
-
-# Set the x and y axis labels
-ax.set_xlabel('Time (s)', fontsize=14)
-ax.set_ylabel('Average distance from expected deflection (cm)', fontsize=14)
-ax.set_title('Distance from expected deflection\n \
-over time of top and bottom oscillations', fontsize=14)
+@ti.func
+def new_Particle(x: Vec2D, c: tint, b: bool) -> Particle:
+    return Particle(x, Vec2D(0.0, 0.0), Mat(1.0, 0.0, 0.0, 1.0), Mat(0.0, 0.0, 0.0, 0.0), 1.0, c, b)
 
 @ti.func
 def gridIndex(i: tint, j: tint) -> int:
@@ -144,18 +160,15 @@ def spawn_rnd_beam():
     bottoms = 100
 
     for _ in range(particle_count - bottoms):
-        # x = 0 -> 1
         x = ti.random(dtype=tfloat)
-        # scale x from 0.04 to 0.5
         x = x * beam_length + 0.04
 
-        # y = 0 -> 1
         y = ti.random(dtype=tfloat)
-        # scale y from 0.5 to 0.55
         y = y * beam_height + heightoffset
 
         particles.append(new_Particle(Vec2D(x, y), 0xED553B, False))
 
+    # Add particles to the bottom of the beam non-randomly to measure deflection
     for i in range(bottoms):
         x = (i / (bottoms - 1)) * beam_length + 0.04
 
@@ -320,12 +333,13 @@ if __name__ == '__main__':
         spawn_beam(tix, tiy)
 
     benchmark_particles = particles.b.to_numpy()
-    # get indices of indicies that are True
+    # get indices of benchmark particles
     benchmark_particle_indicies = [i for i, x in enumerate(benchmark_particles) if x]
 
     frame: tint = 0
     step: tint = 0
 
+    # Create a GUI window
     gui = ti.GUI('Taichi MLS-MPM', res=(window_size, window_size))
 
     avgpeaks = []
@@ -345,7 +359,7 @@ if __name__ == '__main__':
             particle_coords = particles.x.to_numpy()
             pixel_colors = particles.c.to_numpy()
 
-            # remove all pixels and particles that are 0
+            # remove all pixels and particles that are 0 (due to use of SNode)
             pixel_colors = pixel_colors[~(pixel_colors == 0)]
             particle_coords = particle_coords[~(particle_coords == 0).all(1)]
 
@@ -385,24 +399,24 @@ if __name__ == '__main__':
                     [endx, endy] = particle_coords[i]
 
             # Draw vertical line at particle
-            # gui.line([endx, 0], [endx, 1], color=0xFFFFFF)
+            gui.line([endx, 0], [endx, 1], color=0xFFFFFF)
 
             oscillations.append(endy)
             diffs = list(np.diff(oscillations))
             diffs.insert(0, 0)
 
+            # Check if beam is at top or bottom of oscillation
             if (len(diffs) >= 2):
                 if (diffs[-1] * diffs[-2] <= 0):
+                    # Add the average deflection to the list in cm
                     avgpeaks.append(avg_deflection * 100)
                     times.append(current_time)
                     expected_y = heightoffset - yinx(endx - 0.04)
                     enddeflection = np.abs(expected_y - endy)
+                    # Add the end deflection to the list in cm
                     endpeaks.append(enddeflection * 100)
-                    gui.show(f"top or bottom{frame}.png")
-                    frame+= 1
-                    continue
 
-            # Draw the plot
+            # Draw the plot and save it
             if (step % ((int(frame_dt / dt)+1) * 100)) == 0:
                 update_plot(times, avgpeaks, endpeaks)
                 plt.savefig(f"{filename}.png")
